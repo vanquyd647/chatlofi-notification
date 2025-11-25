@@ -6,7 +6,7 @@ node_modules/
 .env.local
 
 # Firebase Service Account - NEVER COMMIT!
-config/
+
 service-account-key.json
 *service-account*.json
 
