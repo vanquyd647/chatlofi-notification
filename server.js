@@ -12,29 +12,35 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// =======================
 // Middleware
+// =======================
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
 
-// Initialize Firebase Admin
+// =======================
+// Firebase Admin Init
+// =======================
 let firebaseApp;
 try {
-  // For Render: Use environment variable with service account JSON
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+    // Render / Prod: dùng JSON trong env
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
+      credential: admin.credential.cert(serviceAccount),
     });
-    console.log('✅ Firebase Admin initialized from environment variable');
+    console.log('✅ Firebase Admin initialized from FIREBASE_SERVICE_ACCOUNT');
   } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    // For local development: Use file path
+    // Local: dùng file JSON qua GOOGLE_APPLICATION_CREDENTIALS
     firebaseApp = admin.initializeApp({
-      credential: admin.credential.applicationDefault()
+      credential: admin.credential.applicationDefault(),
     });
-    console.log('✅ Firebase Admin initialized from credentials file');
+    console.log('✅ Firebase Admin initialized from GOOGLE_APPLICATION_CREDENTIALS');
   } else {
-    throw new Error('No Firebase credentials found');
+    throw new Error(
+      'No Firebase credentials found. Please set FIREBASE_SERVICE_ACCOUNT or GOOGLE_APPLICATION_CREDENTIALS'
+    );
   }
 } catch (error) {
   console.error('❌ Firebase Admin initialization failed:', error);
@@ -43,13 +49,67 @@ try {
 
 const db = admin.firestore();
 
-// Health check endpoint
+// =======================
+// Helper functions
+// =======================
+
+/**
+ * Lấy FCM token của user từ Firestore
+ * @param {string} userId
+ * @returns {Promise<{fcmToken: string|null, exists: boolean}>}
+ */
+async function getUserFcmToken(userId) {
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) {
+    return { fcmToken: null, exists: false };
+  }
+  const fcmToken = userDoc.data()?.fcmToken || null;
+  return { fcmToken, exists: true };
+}
+
+/**
+ * Gửi 1 message FCM
+ * @param {string} token
+ * @param {object} payload
+ */
+function sendFcmToToken(token, payload) {
+  const message = {
+    token,
+    ...payload,
+    android: {
+      priority: 'high',
+      notification: {
+        sound: 'default',
+        color: '#006AF5',
+        channelId: payload?.androidChannelId || 'default',
+      },
+    },
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+          badge: 1,
+        },
+      },
+    },
+  };
+
+  // Xóa key phụ trợ chỉ dùng nội bộ
+  delete message.androidChannelId;
+
+  return admin.messaging().send(message);
+}
+
+// =======================
+// Health Check
+// =======================
+
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'ChatLofi Notification Server',
     version: '1.0.0',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -57,81 +117,64 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy' });
 });
 
+// =======================
+// API: send-notification (generic)
+// =======================
+
 /**
  * Send notification to specific user
  * POST /api/send-notification
+ * body: { recipientId, title, body, data? }
  */
 app.post('/api/send-notification', async (req, res) => {
   try {
     const { recipientId, title, body, data } = req.body;
 
-    // Validate input
     if (!recipientId || !title || !body) {
       return res.status(400).json({
         error: 'Missing required fields',
-        required: ['recipientId', 'title', 'body']
+        required: ['recipientId', 'title', 'body'],
       });
     }
 
-    // Get recipient's FCM token from Firestore
-    const userDoc = await db.collection('users').doc(recipientId).get();
-    
-    if (!userDoc.exists) {
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    const fcmToken = userDoc.data()?.fcmToken;
-    
     if (!fcmToken) {
       return res.status(400).json({ error: 'User has no FCM token' });
     }
 
-    // Send notification using FCM HTTP v1 API
-    const message = {
-      token: fcmToken,
-      notification: {
-        title: title,
-        body: body
-      },
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
       data: data || {},
-      android: {
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          color: '#006AF5',
-          channelId: 'messages'
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1
-          }
-        }
-      }
-    };
-
-    const result = await admin.messaging().send(message);
+      androidChannelId: 'messages',
+    });
 
     res.json({
       success: true,
       messageId: result,
-      recipientId: recipientId
+      recipientId,
     });
-
   } catch (error) {
     console.error('Error sending notification:', error);
     res.status(500).json({
       error: 'Failed to send notification',
-      message: error.message
+      message: error.message,
     });
   }
 });
 
+// =======================
+// API: notify/message
+// =======================
+
 /**
  * Send message notification
  * POST /api/notify/message
+ * body: { chatId, messageId?, senderId, senderName?, text? }
  */
 app.post('/api/notify/message', async (req, res) => {
   try {
@@ -141,92 +184,86 @@ app.post('/api/notify/message', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Get chat members
     const chatDoc = await db.collection('Chats').doc(chatId).get();
-    
+
     if (!chatDoc.exists) {
       return res.status(404).json({ error: 'Chat not found' });
     }
 
     const chatData = chatDoc.data();
-    const recipientIds = chatData.UID.filter(uid => uid !== senderId);
+    const memberIds = Array.isArray(chatData.UID) ? chatData.UID : [];
+    const recipientIds = memberIds.filter((uid) => uid !== senderId);
 
-    // Get FCM tokens for all recipients
-    const tokens = [];
-    for (const uid of recipientIds) {
-      const userDoc = await db.collection('users').doc(uid).get();
-      if (userDoc.exists) {
-        const fcmToken = userDoc.data()?.fcmToken;
-        if (fcmToken) {
-          tokens.push(fcmToken);
-        }
-      }
+    if (recipientIds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No recipients to notify',
+        sent: 0,
+      });
     }
+
+    // Lấy token của tất cả recipients song song
+    const tokenResults = await Promise.all(
+      recipientIds.map((uid) => getUserFcmToken(uid))
+    );
+
+    const tokens = tokenResults
+      .map((r) => r.fcmToken)
+      .filter((t) => typeof t === 'string' && t.trim().length > 0);
 
     if (tokens.length === 0) {
       return res.json({
         success: true,
         message: 'No recipients with FCM tokens',
-        sent: 0
+        sent: 0,
       });
     }
 
-    // Send notification to each recipient
-    const promises = tokens.map(token => {
-      const message = {
-        token: token,
-        notification: {
-          title: senderName || 'Tin nhắn mới',
-          body: text || '📷 Hình ảnh'
-        },
-        data: {
-          screen: 'Chat_fr',
-          roomId: chatId,
-          senderId: senderId,
-          type: 'new_message'
-        },
-        android: {
-          priority: 'high',
-          notification: {
-            sound: 'default',
-            color: '#006AF5',
-            channelId: 'messages'
-          }
-        },
-        apns: {
-          payload: {
-            aps: {
-              sound: 'default',
-              badge: 1
-            }
-          }
-        }
-      };
+    const payload = {
+      notification: {
+        title: senderName || 'Tin nhắn mới',
+        body: text || '📷 Hình ảnh',
+      },
+      data: {
+        screen: 'Chat_fr',
+        roomId: chatId,
+        senderId: senderId,
+        type: 'new_message',
+        ...(messageId ? { messageId } : {}),
+      },
+      androidChannelId: 'messages',
+    };
 
-      return admin.messaging().send(message);
-    });
+    const sendResults = await Promise.allSettled(
+      tokens.map((token) => sendFcmToToken(token, payload))
+    );
 
-    const results = await Promise.allSettled(promises);
-    const successful = results.filter(r => r.status === 'fulfilled').length;
+    const successful = sendResults.filter(
+      (r) => r.status === 'fulfilled'
+    ).length;
 
     res.json({
       success: true,
       sent: successful,
-      total: tokens.length
+      total: tokens.length,
     });
-
   } catch (error) {
     console.error('Error sending message notification:', error);
     res.status(500).json({
       error: 'Failed to send notification',
-      message: error.message
+      message: error.message,
     });
   }
 });
 
+// =======================
+// API: notify/friend-request
+// =======================
+
 /**
  * Send friend request notification
  * POST /api/notify/friend-request
+ * body: { recipientId, senderId, senderName? }
  */
 app.post('/api/notify/friend-request', async (req, res) => {
   try {
@@ -236,68 +273,53 @@ app.post('/api/notify/friend-request', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Get recipient's FCM token
-    const userDoc = await db.collection('users').doc(recipientId).get();
-    
-    if (!userDoc.exists) {
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
       return res.status(404).json({ error: 'Recipient not found' });
     }
 
-    const fcmToken = userDoc.data()?.fcmToken;
-    
     if (!fcmToken) {
       return res.status(400).json({ error: 'Recipient has no FCM token' });
     }
 
-    // Send notification
-    const message = {
-      token: fcmToken,
-      notification: {
-        title: 'Lời mời kết bạn',
-        body: `${senderName || 'Ai đó'} đã gửi lời mời kết bạn`
-      },
-      data: {
-        screen: 'FriendRequest',
-        senderId: senderId,
-        type: 'friend_request'
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          sound: 'default',
-          color: '#006AF5',
-          channelId: 'friend_requests'
-        }
-      },
-      apns: {
-        payload: {
-          aps: {
-            sound: 'default',
-            badge: 1
-          }
-        }
-      }
-    };
+    const title =
+      senderName || 'Lời mời kết bạn mới';
+    const body = senderName
+      ? `${senderName} đã gửi cho bạn lời mời kết bạn`
+      : 'Bạn có lời mời kết bạn mới';
 
-    const result = await admin.messaging().send(message);
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'friend_request',
+        senderId,
+        screen: 'FriendRequests',
+      },
+      androidChannelId: 'friend_requests',
+    });
 
     res.json({
       success: true,
-      messageId: result
+      messageId: result,
     });
-
   } catch (error) {
     console.error('Error sending friend request notification:', error);
     res.status(500).json({
-      error: 'Failed to send notification',
-      message: error.message
+      error: 'Failed to send friend request notification',
+      message: error.message,
     });
   }
 });
 
+// =======================
+// API: notify/new-post
+// =======================
+
 /**
- * Send new post notification
+ * Notify followers when user creates new post
  * POST /api/notify/new-post
+ * body: { postId, userId, userName? }
  */
 app.post('/api/notify/new-post', async (req, res) => {
   try {
@@ -307,105 +329,107 @@ app.post('/api/notify/new-post', async (req, res) => {
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
-    // Get all followers
-    const followersSnapshot = await db.collection('followers')
+    const followersSnapshot = await db
+      .collection('followers')
       .where('followingId', '==', userId)
       .get();
 
     if (followersSnapshot.empty) {
       return res.json({
         success: true,
-        message: 'No followers found',
-        sent: 0
+        message: 'No followers to notify',
+        sent: 0,
       });
     }
 
-    // Get FCM tokens for all followers
-    const tokens = [];
-    for (const doc of followersSnapshot.docs) {
-      const followerDoc = await db.collection('users')
-        .doc(doc.data().followerId)
-        .get();
-      
-      if (followerDoc.exists) {
-        const fcmToken = followerDoc.data()?.fcmToken;
-        if (fcmToken) {
-          tokens.push(fcmToken);
-        }
-      }
+    const followerIds = followersSnapshot.docs
+      .map((doc) => doc.data()?.followerId)
+      .filter((id) => typeof id === 'string' && id.trim().length > 0);
+
+    if (followerIds.length === 0) {
+      return res.json({
+        success: true,
+        message: 'No valid follower IDs',
+        sent: 0,
+      });
     }
+
+    const tokenResults = await Promise.all(
+      followerIds.map((uid) => getUserFcmToken(uid))
+    );
+
+    const tokens = tokenResults
+      .map((r) => r.fcmToken)
+      .filter((t) => typeof t === 'string' && t.trim().length > 0);
 
     if (tokens.length === 0) {
       return res.json({
         success: true,
         message: 'No followers with FCM tokens',
-        sent: 0
+        sent: 0,
       });
     }
 
-    // Send notification to each follower
-    const promises = tokens.map(token => {
-      const message = {
-        token: token,
-        notification: {
-          title: 'Bài viết mới',
-          body: `${userName || 'Ai đó'} đã đăng bài viết mới`
-        },
-        data: {
-          screen: 'PostDetail',
-          postId: postId,
-          userId: userId,
-          type: 'new_post'
-        },
-        android: {
-          priority: 'high',
-          notification: {
-            sound: 'default',
-            color: '#006AF5',
-            channelId: 'posts'
-          }
-        },
-        apns: {
-          payload: {
-            aps: {
-              sound: 'default',
-              badge: 1
-            }
-          }
-        }
-      };
+    const payload = {
+      notification: {
+        title: 'Bài viết mới',
+        body: userName
+          ? `${userName} vừa đăng một bài viết mới`
+          : 'Có bài viết mới từ người bạn đang theo dõi',
+      },
+      data: {
+        screen: 'PostDetail',
+        postId,
+        userId,
+        type: 'new_post',
+      },
+      androidChannelId: 'posts',
+    };
 
-      return admin.messaging().send(message);
-    });
+    const sendResults = await Promise.allSettled(
+      tokens.map((token) => sendFcmToToken(token, payload))
+    );
 
-    const results = await Promise.allSettled(promises);
-    const successful = results.filter(r => r.status === 'fulfilled').length;
+    const successful = sendResults.filter(
+      (r) => r.status === 'fulfilled'
+    ).length;
 
     res.json({
       success: true,
       sent: successful,
-      total: tokens.length
+      total: tokens.length,
     });
-
   } catch (error) {
     console.error('Error sending new post notification:', error);
     res.status(500).json({
-      error: 'Failed to send notification',
-      message: error.message
+      error: 'Failed to send new post notification',
+      message: error.message,
     });
   }
 });
 
-// Error handling middleware
+// =======================
+// 404 & Error handlers
+// =======================
+
+app.use((req, res, next) => {
+  res.status(404).json({
+    error: 'Not found',
+    path: req.originalUrl,
+  });
+});
+
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
   res.status(500).json({
     error: 'Internal server error',
-    message: err.message
+    message: err.message,
   });
 });
 
+// =======================
 // Start server
+// =======================
 app.listen(PORT, () => {
   console.log(`🚀 Notification Server running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
