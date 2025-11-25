@@ -2,7 +2,79 @@
 
 Backend server để gửi push notifications sử dụng FCM HTTP v1 API. Deploy lên Render.com.
 
-## 🚀 Deploy lên Render
+## 📚 Quick Links
+
+- 🔥 **[Firebase Setup Guide](./FIREBASE_SETUP.md)** - Hướng dẫn chi tiết cấu hình Firebase
+- 🧪 **[Test API Script](./test-api.ps1)** - PowerShell script để test các endpoints
+
+## 🔥 Firebase Configuration
+
+**Project:** chatlofi-9c2c8
+
+### Client-Side Config (Web/Mobile App)
+```javascript
+const firebaseConfig = {
+  apiKey: "AIzaSyB56q0rIYvt9KbDVFkqysdDKeq6HunrBkA",
+  authDomain: "chatlofi-9c2c8.firebaseapp.com",
+  projectId: "chatlofi-9c2c8",
+  storageBucket: "chatlofi-9c2c8.appspot.com",
+  messagingSenderId: "901109384021",
+  appId: "1:901109384021:web:e8c72a03840424509625dc",
+  measurementId: "G-L0TG3RV89H"
+};
+```
+
+### Server-Side Config (Admin SDK)
+Xem hướng dẫn chi tiết tại: **[FIREBASE_SETUP.md](./FIREBASE_SETUP.md)**
+
+---
+
+## 🚀 Quick Start (Local Development)
+
+### 1. Install Dependencies
+```powershell
+npm install
+```
+
+### 2. Setup Firebase Service Account
+
+**Option A: Using File Path (Recommended for local)**
+```powershell
+# Tạo thư mục config
+New-Item -ItemType Directory -Force -Path config
+
+# Download service account key từ Firebase Console và move vào config/
+# https://console.firebase.google.com/project/chatlofi-9c2c8/settings/serviceaccounts/adminsdk
+Move-Item service-account-key.json config/
+```
+
+Tạo file `.env`:
+```env
+GOOGLE_APPLICATION_CREDENTIALS=./config/service-account-key.json
+```
+
+**Option B: Using Environment Variable**
+```env
+FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"chatlofi-9c2c8",...}
+```
+
+### 3. Run Server
+```powershell
+npm run dev
+```
+
+Server running at: http://localhost:3000
+
+### 4. Test API
+```powershell
+# Test health check
+Invoke-WebRequest http://localhost:3000/health
+
+# Run test script
+.\test-api.ps1
+```
+
+---
 
 ### Bước 1: Tạo Web Service trên Render
 
