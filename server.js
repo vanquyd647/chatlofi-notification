@@ -438,6 +438,522 @@ app.post('/api/notify/new-post', async (req, res) => {
 });
 
 // =======================
+// API: notify/friend-request-accepted
+// =======================
+
+/**
+ * Notify when friend request is accepted
+ * POST /api/notify/friend-request-accepted
+ * body: { recipientId, acceptorId, acceptorName? }
+ */
+app.post('/api/notify/friend-request-accepted', async (req, res) => {
+  try {
+    const { recipientId, acceptorId, acceptorName } = req.body;
+
+    if (!recipientId || !acceptorId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Recipient has no FCM token' });
+    }
+
+    const title = 'Lời mời kết bạn được chấp nhận';
+    const body = acceptorName
+      ? `${acceptorName} đã chấp nhận lời mời kết bạn của bạn`
+      : 'Lời mời kết bạn của bạn đã được chấp nhận';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'friend_request_accepted',
+        acceptorId,
+        screen: 'Personal_page',
+      },
+      androidChannelId: 'friend_requests',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending friend request accepted notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/post-comment
+// =======================
+
+/**
+ * Notify post owner when someone comments
+ * POST /api/notify/post-comment
+ * body: { postId, postOwnerId, commenterId, commenterName?, commentText? }
+ */
+app.post('/api/notify/post-comment', async (req, res) => {
+  try {
+    const { postId, postOwnerId, commenterId, commenterName, commentText } = req.body;
+
+    if (!postId || !postOwnerId || !commenterId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user comments on their own post
+    if (postOwnerId === commenterId) {
+      return res.json({
+        success: true,
+        message: 'User commented on their own post, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(postOwnerId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Post owner not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Post owner has no FCM token' });
+    }
+
+    const title = 'Bình luận mới';
+    const body = commenterName
+      ? `${commenterName} đã bình luận: "${commentText?.substring(0, 50) || '...'}"` 
+      : 'Có người bình luận bài viết của bạn';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'post_comment',
+        postId,
+        commenterId,
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending post comment notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/post-reaction
+// =======================
+
+/**
+ * Notify post owner when someone reacts
+ * POST /api/notify/post-reaction
+ * body: { postId, postOwnerId, reactorId, reactorName?, reactionType? }
+ */
+app.post('/api/notify/post-reaction', async (req, res) => {
+  try {
+    const { postId, postOwnerId, reactorId, reactorName, reactionType } = req.body;
+
+    if (!postId || !postOwnerId || !reactorId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user reacts to their own post
+    if (postOwnerId === reactorId) {
+      return res.json({
+        success: true,
+        message: 'User reacted to their own post, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(postOwnerId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Post owner not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Post owner has no FCM token' });
+    }
+
+    // Map reaction types to emojis
+    const reactionEmojis = {
+      like: '👍',
+      love: '❤️',
+      haha: '😆',
+      wow: '😮',
+      sad: '😢',
+      angry: '😠',
+    };
+    const emoji = reactionEmojis[reactionType] || '👍';
+
+    const title = 'Biểu cảm mới';
+    const body = reactorName
+      ? `${reactorName} ${emoji} bài viết của bạn`
+      : `Có người ${emoji} bài viết của bạn`;
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'post_reaction',
+        postId,
+        reactorId,
+        reactionType: reactionType || 'like',
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending post reaction notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/post-share
+// =======================
+
+/**
+ * Notify post owner when someone shares their post
+ * POST /api/notify/post-share
+ * body: { postId, postOwnerId, sharerId, sharerName? }
+ */
+app.post('/api/notify/post-share', async (req, res) => {
+  try {
+    const { postId, postOwnerId, sharerId, sharerName } = req.body;
+
+    if (!postId || !postOwnerId || !sharerId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user shares their own post
+    if (postOwnerId === sharerId) {
+      return res.json({
+        success: true,
+        message: 'User shared their own post, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(postOwnerId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Post owner not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Post owner has no FCM token' });
+    }
+
+    const title = 'Bài viết được chia sẻ';
+    const body = sharerName
+      ? `${sharerName} đã chia sẻ bài viết của bạn`
+      : 'Có người đã chia sẻ bài viết của bạn';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'post_share',
+        postId,
+        sharerId,
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending post share notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/comment-reply
+// =======================
+
+/**
+ * Notify when someone replies to a comment
+ * POST /api/notify/comment-reply
+ * body: { postId, commentOwnerId, replierId, replierName?, replyText? }
+ */
+app.post('/api/notify/comment-reply', async (req, res) => {
+  try {
+    const { postId, commentOwnerId, replierId, replierName, replyText } = req.body;
+
+    if (!postId || !commentOwnerId || !replierId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user replies to their own comment
+    if (commentOwnerId === replierId) {
+      return res.json({
+        success: true,
+        message: 'User replied to their own comment, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(commentOwnerId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Comment owner not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Comment owner has no FCM token' });
+    }
+
+    const title = 'Trả lời bình luận';
+    const body = replierName
+      ? `${replierName} đã trả lời bình luận của bạn: "${replyText?.substring(0, 50) || '...'}"`
+      : 'Có người trả lời bình luận của bạn';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'comment_reply',
+        postId,
+        replierId,
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending comment reply notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/comment-like
+// =======================
+
+/**
+ * Notify when someone likes a comment
+ * POST /api/notify/comment-like
+ * body: { postId, commentId, commentOwnerId, likerId, likerName? }
+ */
+app.post('/api/notify/comment-like', async (req, res) => {
+  try {
+    const { postId, commentId, commentOwnerId, likerId, likerName } = req.body;
+
+    if (!postId || !commentId || !commentOwnerId || !likerId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user likes their own comment
+    if (commentOwnerId === likerId) {
+      return res.json({
+        success: true,
+        message: 'User liked their own comment, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(commentOwnerId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Comment owner not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Comment owner has no FCM token' });
+    }
+
+    const title = 'Bình luận được thích';
+    const body = likerName
+      ? `${likerName} đã thích bình luận của bạn`
+      : 'Có người thích bình luận của bạn';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'comment_like',
+        postId,
+        commentId,
+        likerId,
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending comment like notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/group-invite
+// =======================
+
+/**
+ * Notify when user is invited to a group
+ * POST /api/notify/group-invite
+ * body: { recipientId, groupId, groupName?, inviterId, inviterName? }
+ */
+app.post('/api/notify/group-invite', async (req, res) => {
+  try {
+    const { recipientId, groupId, groupName, inviterId, inviterName } = req.body;
+
+    if (!recipientId || !groupId || !inviterId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Recipient has no FCM token' });
+    }
+
+    const title = 'Lời mời vào nhóm';
+    const body = inviterName && groupName
+      ? `${inviterName} đã mời bạn vào nhóm "${groupName}"`
+      : 'Bạn được mời vào một nhóm chat mới';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'group_invite',
+        groupId,
+        inviterId,
+        screen: 'Chat_fr',
+      },
+      androidChannelId: 'messages',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending group invite notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: notify/mention
+// =======================
+
+/**
+ * Notify when user is mentioned in a post or comment
+ * POST /api/notify/mention
+ * body: { recipientId, mentionerId, mentionerName?, postId?, commentId?, type: 'post' | 'comment' }
+ */
+app.post('/api/notify/mention', async (req, res) => {
+  try {
+    const { recipientId, mentionerId, mentionerName, postId, commentId, type } = req.body;
+
+    if (!recipientId || !mentionerId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    // Don't notify if user mentions themselves
+    if (recipientId === mentionerId) {
+      return res.json({
+        success: true,
+        message: 'User mentioned themselves, no notification needed',
+        sent: 0,
+      });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Recipient has no FCM token' });
+    }
+
+    const title = 'Bạn được nhắc đến';
+    const body = mentionerName
+      ? `${mentionerName} đã nhắc đến bạn trong ${type === 'comment' ? 'bình luận' : 'bài viết'}`
+      : `Bạn được nhắc đến trong một ${type === 'comment' ? 'bình luận' : 'bài viết'}`;
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { title, body },
+      data: {
+        type: 'mention',
+        mentionType: type || 'post',
+        postId: postId || '',
+        commentId: commentId || '',
+        mentionerId,
+        screen: 'PostDetail',
+      },
+      androidChannelId: 'posts',
+    });
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending mention notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
 // 404 & Error handlers
 // =======================
 
