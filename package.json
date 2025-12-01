@@ -16,7 +16,10 @@
     "firebase-admin": "^11.11.0",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "helmet": "^7.1.0"
+    "helmet": "^7.1.0",
+    "protobufjs": "^7.2.5",
+    "@grpc/grpc-js": "^1.9.0",
+    "@grpc/proto-loader": "^0.7.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
