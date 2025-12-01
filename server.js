@@ -165,13 +165,14 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'ChatLofi Notification Server',
-    version: '1.0.0',
+    version: '1.1.0', // Updated to trigger redeploy with Firestore save
     timestamp: new Date().toISOString(),
+    features: ['fcm_push', 'firestore_save'],
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy' });
+  res.json({ status: 'healthy', version: '1.1.0' });
 });
 
 // =======================
