@@ -77,13 +77,18 @@ async function getUserFcmToken(userId) {
  */
 async function saveNotificationToFirestore(recipientId, type, title, body, data = {}) {
   try {
+    // Remove undefined values from data object
+    const cleanData = Object.fromEntries(
+      Object.entries(data).filter(([_, value]) => value !== undefined && value !== null)
+    );
+    
     const notificationRef = db.collection('notifications').doc();
     await notificationRef.set({
       recipientId,
       type,
       title,
       body,
-      data,
+      data: cleanData,
       read: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
