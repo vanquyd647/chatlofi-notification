@@ -68,6 +68,34 @@ async function getUserFcmToken(userId) {
 }
 
 /**
+ * Lưu notification vào Firestore để hiển thị trong Notifications Screen
+ * @param {string} recipientId - ID người nhận
+ * @param {string} type - Loại thông báo (message, friend_request, post_reaction, etc.)
+ * @param {string} title - Tiêu đề thông báo
+ * @param {string} body - Nội dung thông báo
+ * @param {object} data - Dữ liệu bổ sung (senderId, postId, roomId, etc.)
+ */
+async function saveNotificationToFirestore(recipientId, type, title, body, data = {}) {
+  try {
+    const notificationRef = db.collection('notifications').doc();
+    await notificationRef.set({
+      recipientId,
+      type,
+      title,
+      body,
+      data,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    console.log('✅ Notification saved to Firestore:', notificationRef.id);
+    return notificationRef.id;
+  } catch (error) {
+    console.error('❌ Error saving notification to Firestore:', error);
+    return null;
+  }
+}
+
+/**
  * Gửi 1 message FCM
  * @param {string} token
  * @param {object} payload
@@ -271,6 +299,24 @@ app.post('/api/notify/message', async (req, res) => {
       (r) => r.status === 'fulfilled'
     ).length;
 
+    // Save notification to Firestore for each recipient
+    await Promise.all(
+      recipientIds.map((recipientId) =>
+        saveNotificationToFirestore(
+          recipientId,
+          'new_message',
+          senderName || 'Tin nhắn mới',
+          text || '📷 Hình ảnh',
+          {
+            roomId: chatId,
+            senderId,
+            senderName,
+            messageId,
+          }
+        )
+      )
+    );
+
     res.json({
       success: true,
       sent: successful,
@@ -327,6 +373,15 @@ app.post('/api/notify/friend-request', async (req, res) => {
       },
       androidChannelId: 'friend_requests',
     });
+
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      recipientId,
+      'friend_request',
+      title,
+      body,
+      { senderId, senderName }
+    );
 
     res.json({
       success: true,
@@ -479,6 +534,15 @@ app.post('/api/notify/friend-request-accepted', async (req, res) => {
       androidChannelId: 'friend_requests',
     });
 
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      recipientId,
+      'friend_accept',
+      title,
+      body,
+      { senderId: acceptorId, senderName: acceptorName }
+    );
+
     res.json({
       success: true,
       messageId: result,
@@ -543,6 +607,15 @@ app.post('/api/notify/post-comment', async (req, res) => {
       },
       androidChannelId: 'posts',
     });
+
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      postOwnerId,
+      'post_comment',
+      title,
+      body,
+      { postId, senderId: commenterId, senderName: commenterName, commentText }
+    );
 
     res.json({
       success: true,
@@ -621,6 +694,15 @@ app.post('/api/notify/post-reaction', async (req, res) => {
       androidChannelId: 'posts',
     });
 
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      postOwnerId,
+      'post_reaction',
+      title,
+      body,
+      { postId, senderId: reactorId, senderName: reactorName, reactionType }
+    );
+
     res.json({
       success: true,
       messageId: result,
@@ -686,6 +768,15 @@ app.post('/api/notify/post-share', async (req, res) => {
       androidChannelId: 'posts',
     });
 
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      postOwnerId,
+      'post_share',
+      title,
+      body,
+      { postId, senderId: sharerId, senderName: sharerName }
+    );
+
     res.json({
       success: true,
       messageId: result,
@@ -750,6 +841,15 @@ app.post('/api/notify/comment-reply', async (req, res) => {
       },
       androidChannelId: 'posts',
     });
+
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      commentOwnerId,
+      'comment_reply',
+      title,
+      body,
+      { postId, senderId: replierId, senderName: replierName, replyText }
+    );
 
     res.json({
       success: true,
@@ -817,6 +917,15 @@ app.post('/api/notify/comment-like', async (req, res) => {
       androidChannelId: 'posts',
     });
 
+    // Save notification to Firestore
+    await saveNotificationToFirestore(
+      commentOwnerId,
+      'comment_like',
+      title,
+      body,
+      { postId, commentId, senderId: likerId, senderName: likerName }
+    );
+
     res.json({
       success: true,
       messageId: result,
@@ -871,6 +980,15 @@ app.post('/api/notify/group-invite', async (req, res) => {
         screen: 'Chat_fr',
       },
       androidChannelId: 'messages',
+    });
+
+    // Save notification to Firestore
+    await saveNotificationToFirestore(recipientId, 'group_invite', title, body, {
+      groupId,
+      groupName: groupName || '',
+      inviterId,
+      inviterName: inviterName || '',
+      screen: 'Chat_fr',
     });
 
     res.json({
@@ -938,6 +1056,16 @@ app.post('/api/notify/mention', async (req, res) => {
         screen: 'PostDetail',
       },
       androidChannelId: 'posts',
+    });
+
+    // Save notification to Firestore
+    await saveNotificationToFirestore(recipientId, 'mention', title, body, {
+      mentionType: type || 'post',
+      postId: postId || '',
+      commentId: commentId || '',
+      mentionerId,
+      mentionerName: mentionerName || '',
+      screen: 'PostDetail',
     });
 
     res.json({
