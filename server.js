@@ -73,30 +73,59 @@ async function getUserFcmToken(userId) {
  * @param {object} payload
  */
 function sendFcmToToken(token, payload) {
+  // IMPORTANT: For killed state notifications, we need BOTH notification and data payloads
+  // notification payload: shown by system when app is killed/background
+  // data payload: handled by app when in foreground
+  
   const message = {
     token,
-    ...payload,
+    // Notification payload - this is what Android system shows when app is killed
+    notification: payload.notification || {},
+    // Data payload - this is passed to the app
+    data: {
+      ...(payload.data || {}),
+      // Convert all values to strings as required by FCM
+      click_action: 'FLUTTER_NOTIFICATION_CLICK',
+    },
     android: {
+      // HIGH priority ensures notification is delivered immediately
       priority: 'high',
+      // TTL - time to live (how long to keep trying to deliver)
+      ttl: 86400000, // 24 hours in milliseconds
       notification: {
         sound: 'default',
         color: '#006AF5',
-        channelId: payload?.androidChannelId || 'default',
+        channelId: payload?.androidChannelId || 'messages',
+        // These ensure notification shows even when app is killed
+        defaultSound: true,
+        defaultVibrateTimings: true,
+        notificationPriority: 'PRIORITY_MAX',
+        visibility: 'PUBLIC',
+        // Icon for notification
+        icon: 'notification_icon',
       },
     },
     apns: {
+      headers: {
+        'apns-priority': '10', // High priority
+        'apns-push-type': 'alert',
+      },
       payload: {
         aps: {
           sound: 'default',
           badge: 1,
+          'content-available': 1,
+          'mutable-content': 1,
         },
       },
     },
   };
 
-  // Xóa key phụ trợ chỉ dùng nội bộ
+  // Remove internal helper key
   delete message.androidChannelId;
 
+  console.log('Sending FCM message:', JSON.stringify(message, null, 2));
+  
   return admin.messaging().send(message);
 }
 
