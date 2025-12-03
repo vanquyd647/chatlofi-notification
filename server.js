@@ -170,14 +170,14 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'ChatLofi Notification Server',
-    version: '1.1.0', // Updated to trigger redeploy with Firestore save
+    version: '1.2.0', // Added auto-ping + mute notification check
     timestamp: new Date().toISOString(),
-    features: ['fcm_push', 'firestore_save'],
+    features: ['fcm_push', 'firestore_save', 'mute_check', 'auto_ping'],
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', version: '1.1.0' });
+  res.json({ status: 'healthy', version: '1.2.0' });
 });
 
 // =======================
@@ -1116,9 +1116,38 @@ app.use((err, req, res, next) => {
 });
 
 // =======================
+// Auto-ping to keep Render server alive
+// =======================
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://chatlofi-notification.onrender.com';
+const PING_INTERVAL = 14 * 60 * 1000; // 14 minutes (before 15min timeout)
+
+function startAutoPing() {
+  // Only run auto-ping in production (on Render)
+  if (process.env.NODE_ENV !== 'production' && !process.env.RENDER) {
+    console.log('⏸️ Auto-ping disabled (not in production)');
+    return;
+  }
+
+  console.log(`🔄 Auto-ping enabled - will ping every 14 minutes to: ${RENDER_URL}`);
+  
+  setInterval(async () => {
+    try {
+      const response = await fetch(`${RENDER_URL}/health`);
+      const data = await response.json();
+      console.log(`✅ Auto-ping successful at ${new Date().toISOString()} - Status: ${data.status}`);
+    } catch (error) {
+      console.error(`❌ Auto-ping failed at ${new Date().toISOString()}:`, error.message);
+    }
+  }, PING_INTERVAL);
+}
+
+// =======================
 // Start server
 // =======================
 app.listen(PORT, () => {
   console.log(`🚀 Notification Server running on port ${PORT}`);
   console.log(`📡 Health check: http://localhost:${PORT}/health`);
+  
+  // Start auto-ping after server is running
+  startAutoPing();
 });
