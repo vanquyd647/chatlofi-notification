@@ -7,7 +7,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
 const helmet = require('helmet');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 require('dotenv').config();
 
 const app = express();
@@ -28,24 +28,9 @@ const OTP_EXPIRY_MINUTES = 5;
 const MAX_OTP_ATTEMPTS = 3;
 
 // =======================
-// Email Transporter (Gmail SMTP)
+// Email Service (Resend API - works on Render)
 // =======================
-const emailTransporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.SMTP_EMAIL || 'homequy001@gmail.com',
-    pass: process.env.SMTP_PASSWORD || 'ykhw pkek iuha qohn',
-  },
-});
-
-// Verify email transporter on startup
-emailTransporter.verify((error, success) => {
-  if (error) {
-    console.error('❌ Email transporter verification failed:', error);
-  } else {
-    console.log('✅ Email transporter ready for sending');
-  }
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /**
  * Generate random 6-digit OTP
@@ -55,15 +40,12 @@ function generateOTP() {
 }
 
 /**
- * Send OTP email
+ * Send OTP email using Resend API
  */
 async function sendOTPEmail(email, otp) {
-  const mailOptions = {
-    from: {
-      name: 'ChatLofi App',
-      address: process.env.SMTP_EMAIL || 'homequy001@gmail.com',
-    },
-    to: email,
+  const { data, error } = await resend.emails.send({
+    from: 'ChatLofi <onboarding@resend.dev>',
+    to: [email],
     subject: '🔐 Mã xác thực OTP - ChatLofi',
     html: `
       <!DOCTYPE html>
@@ -111,9 +93,13 @@ async function sendOTPEmail(email, otp) {
       </html>
     `,
     text: `Mã OTP của bạn là: ${otp}\n\nMã có hiệu lực trong ${OTP_EXPIRY_MINUTES} phút.\nKhông chia sẻ mã này với bất kỳ ai.`,
-  };
+  });
 
-  return emailTransporter.sendMail(mailOptions);
+  if (error) {
+    throw new Error(error.message);
+  }
+  
+  return data;
 }
 
 // =======================
