@@ -255,13 +255,21 @@ app.post('/api/notify/message', async (req, res) => {
 
     const chatData = chatDoc.data();
     const memberIds = Array.isArray(chatData.UID) ? chatData.UID : [];
-    const recipientIds = memberIds.filter((uid) => uid !== senderId);
+    
+    // Lấy danh sách users đã mute chat này
+    const mutedUsers = Array.isArray(chatData.mutedUsers) ? chatData.mutedUsers : [];
+    
+    // Loại bỏ sender và những người đã mute
+    const recipientIds = memberIds.filter((uid) => uid !== senderId && !mutedUsers.includes(uid));
+    
+    console.log(`📱 Chat ${chatId}: Members=${memberIds.length}, Muted=${mutedUsers.length}, Recipients=${recipientIds.length}`);
 
     if (recipientIds.length === 0) {
       return res.json({
         success: true,
-        message: 'No recipients to notify',
+        message: 'No recipients to notify (all muted or sender only)',
         sent: 0,
+        muted: mutedUsers.length,
       });
     }
 
@@ -305,7 +313,7 @@ app.post('/api/notify/message', async (req, res) => {
       (r) => r.status === 'fulfilled'
     ).length;
 
-    // Save notification to Firestore for each recipient
+    // Save notification to Firestore for each recipient (only non-muted users)
     await Promise.all(
       recipientIds.map((recipientId) =>
         saveNotificationToFirestore(
@@ -327,6 +335,7 @@ app.post('/api/notify/message', async (req, res) => {
       success: true,
       sent: successful,
       total: tokens.length,
+      mutedCount: mutedUsers.length,
     });
   } catch (error) {
     console.error('Error sending message notification:', error);
