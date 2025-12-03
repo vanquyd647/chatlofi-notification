@@ -7,6 +7,7 @@ const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
 const helmet = require('helmet');
+const nodemailer = require('nodemailer');
 require('dotenv').config();
 
 const app = express();
@@ -18,6 +19,102 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
+
+// =======================
+// OTP Storage (in-memory, sẽ reset khi server restart)
+// =======================
+const otpStore = new Map(); // email -> { otp, expiresAt, attempts }
+const OTP_EXPIRY_MINUTES = 5;
+const MAX_OTP_ATTEMPTS = 3;
+
+// =======================
+// Email Transporter (Gmail SMTP)
+// =======================
+const emailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.SMTP_EMAIL || 'homequy001@gmail.com',
+    pass: process.env.SMTP_PASSWORD || 'ykhw pkek iuha qohn',
+  },
+});
+
+// Verify email transporter on startup
+emailTransporter.verify((error, success) => {
+  if (error) {
+    console.error('❌ Email transporter verification failed:', error);
+  } else {
+    console.log('✅ Email transporter ready for sending');
+  }
+});
+
+/**
+ * Generate random 6-digit OTP
+ */
+function generateOTP() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Send OTP email
+ */
+async function sendOTPEmail(email, otp) {
+  const mailOptions = {
+    from: {
+      name: 'ChatLofi App',
+      address: process.env.SMTP_EMAIL || 'homequy001@gmail.com',
+    },
+    to: email,
+    subject: '🔐 Mã xác thực OTP - ChatLofi',
+    html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: Arial, sans-serif; background-color: #f5f5f5; margin: 0; padding: 20px; }
+          .container { max-width: 500px; margin: 0 auto; background: white; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+          .header { background: linear-gradient(135deg, #006AF5, #0052CC); padding: 30px; text-align: center; }
+          .header h1 { color: white; margin: 0; font-size: 24px; }
+          .content { padding: 30px; text-align: center; }
+          .otp-code { background: #f0f8ff; border: 2px dashed #006AF5; border-radius: 10px; padding: 20px; margin: 20px 0; }
+          .otp-code h2 { color: #006AF5; font-size: 36px; letter-spacing: 8px; margin: 0; font-family: monospace; }
+          .warning { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; text-align: left; }
+          .footer { background: #f8f9fa; padding: 20px; text-align: center; color: #666; font-size: 12px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1>🔐 Xác Thực Email</h1>
+          </div>
+          <div class="content">
+            <p>Xin chào!</p>
+            <p>Bạn đang đăng ký tài khoản ChatLofi. Vui lòng sử dụng mã OTP bên dưới để xác thực email của bạn:</p>
+            <div class="otp-code">
+              <h2>${otp}</h2>
+            </div>
+            <div class="warning">
+              <strong>⚠️ Lưu ý:</strong>
+              <ul style="margin: 5px 0; padding-left: 20px;">
+                <li>Mã OTP có hiệu lực trong <strong>${OTP_EXPIRY_MINUTES} phút</strong></li>
+                <li>Không chia sẻ mã này với bất kỳ ai</li>
+                <li>Nếu bạn không yêu cầu mã này, vui lòng bỏ qua email</li>
+              </ul>
+            </div>
+          </div>
+          <div class="footer">
+            <p>© 2024 ChatLofi. All rights reserved.</p>
+            <p>Email này được gửi tự động, vui lòng không trả lời.</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `,
+    text: `Mã OTP của bạn là: ${otp}\n\nMã có hiệu lực trong ${OTP_EXPIRY_MINUTES} phút.\nKhông chia sẻ mã này với bất kỳ ai.`,
+  };
+
+  return emailTransporter.sendMail(mailOptions);
+}
 
 // =======================
 // Firebase Admin Init
@@ -170,14 +267,208 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'ChatLofi Notification Server',
-    version: '1.2.0', // Added auto-ping + mute notification check
+    version: '1.3.0', // Added OTP verification via SMTP
     timestamp: new Date().toISOString(),
-    features: ['fcm_push', 'firestore_save', 'mute_check', 'auto_ping'],
+    features: ['fcm_push', 'firestore_save', 'mute_check', 'auto_ping', 'otp_email'],
   });
 });
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', version: '1.2.0' });
+  res.json({ status: 'healthy', version: '1.3.0' });
+});
+
+// =======================
+// API: OTP - Send OTP
+// =======================
+
+/**
+ * Send OTP to email for verification
+ * POST /api/otp/send
+ * body: { email }
+ */
+app.post('/api/otp/send', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
+    // Check if there's a recent OTP request (rate limiting)
+    const existingOtp = otpStore.get(email);
+    if (existingOtp && existingOtp.expiresAt > Date.now()) {
+      const remainingSeconds = Math.ceil((existingOtp.expiresAt - Date.now()) / 1000);
+      if (remainingSeconds > (OTP_EXPIRY_MINUTES * 60) - 60) {
+        // If OTP was sent less than 1 minute ago
+        return res.status(429).json({
+          error: 'Please wait before requesting a new OTP',
+          retryAfter: 60 - ((OTP_EXPIRY_MINUTES * 60) - remainingSeconds),
+        });
+      }
+    }
+
+    // Generate new OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + (OTP_EXPIRY_MINUTES * 60 * 1000);
+
+    // Store OTP
+    otpStore.set(email, {
+      otp,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // Send email
+    await sendOTPEmail(email, otp);
+
+    console.log(`📧 OTP sent to ${email}: ${otp} (expires in ${OTP_EXPIRY_MINUTES} minutes)`);
+
+    res.json({
+      success: true,
+      message: 'OTP sent successfully',
+      expiresIn: OTP_EXPIRY_MINUTES * 60, // seconds
+    });
+  } catch (error) {
+    console.error('Error sending OTP:', error);
+    res.status(500).json({
+      error: 'Failed to send OTP',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: OTP - Verify OTP
+// =======================
+
+/**
+ * Verify OTP
+ * POST /api/otp/verify
+ * body: { email, otp }
+ */
+app.post('/api/otp/verify', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res.status(400).json({ error: 'Email and OTP are required' });
+    }
+
+    const storedData = otpStore.get(email);
+
+    if (!storedData) {
+      return res.status(400).json({
+        error: 'No OTP found for this email',
+        code: 'OTP_NOT_FOUND',
+      });
+    }
+
+    // Check if OTP expired
+    if (storedData.expiresAt < Date.now()) {
+      otpStore.delete(email);
+      return res.status(400).json({
+        error: 'OTP has expired',
+        code: 'OTP_EXPIRED',
+      });
+    }
+
+    // Check attempts
+    if (storedData.attempts >= MAX_OTP_ATTEMPTS) {
+      otpStore.delete(email);
+      return res.status(400).json({
+        error: 'Too many failed attempts. Please request a new OTP',
+        code: 'TOO_MANY_ATTEMPTS',
+      });
+    }
+
+    // Verify OTP
+    if (storedData.otp !== otp.toString().trim()) {
+      storedData.attempts += 1;
+      otpStore.set(email, storedData);
+      
+      const remainingAttempts = MAX_OTP_ATTEMPTS - storedData.attempts;
+      return res.status(400).json({
+        error: 'Invalid OTP',
+        code: 'INVALID_OTP',
+        remainingAttempts,
+      });
+    }
+
+    // OTP verified successfully
+    otpStore.delete(email);
+
+    console.log(`✅ OTP verified for ${email}`);
+
+    res.json({
+      success: true,
+      message: 'OTP verified successfully',
+      verified: true,
+    });
+  } catch (error) {
+    console.error('Error verifying OTP:', error);
+    res.status(500).json({
+      error: 'Failed to verify OTP',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
+// API: OTP - Resend OTP
+// =======================
+
+/**
+ * Resend OTP (invalidates previous OTP)
+ * POST /api/otp/resend
+ * body: { email }
+ */
+app.post('/api/otp/resend', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    // Delete existing OTP
+    otpStore.delete(email);
+
+    // Generate new OTP
+    const otp = generateOTP();
+    const expiresAt = Date.now() + (OTP_EXPIRY_MINUTES * 60 * 1000);
+
+    // Store new OTP
+    otpStore.set(email, {
+      otp,
+      expiresAt,
+      attempts: 0,
+      createdAt: Date.now(),
+    });
+
+    // Send email
+    await sendOTPEmail(email, otp);
+
+    console.log(`📧 OTP resent to ${email}: ${otp}`);
+
+    res.json({
+      success: true,
+      message: 'OTP resent successfully',
+      expiresIn: OTP_EXPIRY_MINUTES * 60,
+    });
+  } catch (error) {
+    console.error('Error resending OTP:', error);
+    res.status(500).json({
+      error: 'Failed to resend OTP',
+      message: error.message,
+    });
+  }
 });
 
 // =======================
