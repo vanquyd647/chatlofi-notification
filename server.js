@@ -238,6 +238,12 @@ app.post('/api/send-notification', async (req, res) => {
  * Send message notification
  * POST /api/notify/message
  * body: { chatId, messageId?, senderId, senderName?, text? }
+ * 
+ * Logic tắt thông báo (giống Facebook):
+ * - Khi user A tắt thông báo chat với B:
+ *   + A KHÔNG nhận push notification từ B
+ *   + A VẪN nhận notification lưu trong Firestore (để xem sau)
+ *   + B KHÔNG bị ảnh hưởng (vẫn nhận push bình thường)
  */
 app.post('/api/notify/message', async (req, res) => {
   try {
@@ -259,23 +265,50 @@ app.post('/api/notify/message', async (req, res) => {
     // Lấy danh sách users đã mute chat này
     const mutedUsers = Array.isArray(chatData.mutedUsers) ? chatData.mutedUsers : [];
     
-    // Loại bỏ sender và những người đã mute
-    const recipientIds = memberIds.filter((uid) => uid !== senderId && !mutedUsers.includes(uid));
+    // Tất cả recipients (trừ sender) - dùng để lưu notification
+    const allRecipientIds = memberIds.filter((uid) => uid !== senderId);
     
-    console.log(`📱 Chat ${chatId}: Members=${memberIds.length}, Muted=${mutedUsers.length}, Recipients=${recipientIds.length}`);
+    // Recipients nhận push notification (loại bỏ những người đã mute)
+    const pushRecipientIds = allRecipientIds.filter((uid) => !mutedUsers.includes(uid));
+    
+    console.log(`📱 Chat ${chatId}: Members=${memberIds.length}, Muted=${mutedUsers.length}, Push=${pushRecipientIds.length}, SaveNotif=${allRecipientIds.length}`);
 
-    if (recipientIds.length === 0) {
+    // === PHẦN 1: Lưu notification vào Firestore cho TẤT CẢ recipients (kể cả đã mute) ===
+    // Để họ có thể xem lại trong màn hình Notifications
+    if (allRecipientIds.length > 0) {
+      await Promise.all(
+        allRecipientIds.map((recipientId) =>
+          saveNotificationToFirestore(
+            recipientId,
+            'new_message',
+            senderName || 'Tin nhắn mới',
+            text || '📷 Hình ảnh',
+            {
+              roomId: chatId,
+              senderId,
+              senderName,
+              messageId,
+            }
+          )
+        )
+      );
+      console.log(`💾 Saved notifications to Firestore for ${allRecipientIds.length} recipients`);
+    }
+
+    // === PHẦN 2: Gửi push notification CHỈ cho những người KHÔNG mute ===
+    if (pushRecipientIds.length === 0) {
       return res.json({
         success: true,
-        message: 'No recipients to notify (all muted or sender only)',
+        message: 'Notifications saved, but no push recipients (all muted)',
         sent: 0,
+        saved: allRecipientIds.length,
         muted: mutedUsers.length,
       });
     }
 
-    // Lấy token của tất cả recipients song song
+    // Lấy token của những người không mute
     const tokenResults = await Promise.all(
-      recipientIds.map((uid) => getUserFcmToken(uid))
+      pushRecipientIds.map((uid) => getUserFcmToken(uid))
     );
 
     const tokens = tokenResults
@@ -285,8 +318,9 @@ app.post('/api/notify/message', async (req, res) => {
     if (tokens.length === 0) {
       return res.json({
         success: true,
-        message: 'No recipients with FCM tokens',
+        message: 'Notifications saved, but no FCM tokens for push',
         sent: 0,
+        saved: allRecipientIds.length,
       });
     }
 
@@ -313,28 +347,11 @@ app.post('/api/notify/message', async (req, res) => {
       (r) => r.status === 'fulfilled'
     ).length;
 
-    // Save notification to Firestore for each recipient (only non-muted users)
-    await Promise.all(
-      recipientIds.map((recipientId) =>
-        saveNotificationToFirestore(
-          recipientId,
-          'new_message',
-          senderName || 'Tin nhắn mới',
-          text || '📷 Hình ảnh',
-          {
-            roomId: chatId,
-            senderId,
-            senderName,
-            messageId,
-          }
-        )
-      )
-    );
-
     res.json({
       success: true,
       sent: successful,
       total: tokens.length,
+      saved: allRecipientIds.length,
       mutedCount: mutedUsers.length,
     });
   } catch (error) {
