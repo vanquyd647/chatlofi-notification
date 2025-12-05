@@ -837,8 +837,6 @@ app.post('/api/notify/video-call', async (req, res) => {
       notification: { 
         title, 
         body,
-        // Android high priority for call notifications
-        android_channel_id: 'video_call',
       },
       data: {
         type: 'video_call',
