@@ -802,6 +802,71 @@ app.post('/api/notify/new-post', async (req, res) => {
 });
 
 // =======================
+// API: notify/video-call
+// =======================
+
+/**
+ * Notify incoming video call
+ * POST /api/notify/video-call
+ * body: { recipientId, callerId, callerName, roomId }
+ */
+app.post('/api/notify/video-call', async (req, res) => {
+  try {
+    const { recipientId, callerId, callerName, roomId } = req.body;
+
+    if (!recipientId || !callerId) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const { fcmToken, exists } = await getUserFcmToken(recipientId);
+
+    if (!exists) {
+      return res.status(404).json({ error: 'Recipient not found' });
+    }
+
+    if (!fcmToken) {
+      return res.status(400).json({ error: 'Recipient has no FCM token' });
+    }
+
+    const title = '📹 Cuộc gọi video đến';
+    const body = callerName
+      ? `${callerName} đang gọi video cho bạn`
+      : 'Bạn có cuộc gọi video đến';
+
+    const result = await sendFcmToToken(fcmToken, {
+      notification: { 
+        title, 
+        body,
+        // Android high priority for call notifications
+        android_channel_id: 'video_call',
+      },
+      data: {
+        type: 'video_call',
+        callerId,
+        callerName: callerName || '',
+        recipientId,
+        roomId: roomId || '',
+        screen: 'VideoCall',
+      },
+      androidChannelId: 'video_call',
+    });
+
+    console.log('✅ Video call notification sent to:', recipientId);
+
+    res.json({
+      success: true,
+      messageId: result,
+    });
+  } catch (error) {
+    console.error('Error sending video call notification:', error);
+    res.status(500).json({
+      error: 'Failed to send notification',
+      message: error.message,
+    });
+  }
+});
+
+// =======================
 // API: notify/friend-request-accepted
 // =======================
 
