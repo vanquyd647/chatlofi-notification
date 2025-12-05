@@ -833,6 +833,25 @@ app.post('/api/notify/video-call', async (req, res) => {
       ? `${callerName} đang gọi video cho bạn`
       : 'Bạn có cuộc gọi video đến';
 
+    // Lưu thông báo vào Firestore
+    try {
+      await admin.firestore().collection('notifications').add({
+        recipientId,
+        senderId: callerId,
+        senderName: callerName || 'Người dùng',
+        type: 'video_call',
+        title,
+        body,
+        roomId: roomId || '',
+        read: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+      console.log('✅ Video call notification saved to Firestore');
+    } catch (saveError) {
+      console.error('Error saving notification to Firestore:', saveError);
+      // Continue even if save fails
+    }
+
     const result = await sendFcmToToken(fcmToken, {
       notification: { 
         title, 
